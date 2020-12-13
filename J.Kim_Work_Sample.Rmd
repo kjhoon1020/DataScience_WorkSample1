@@ -1,0 +1,815 @@
+---
+title: 'WORK SAMPLE FOR DATA SCIENCE 1'
+subtitle: 'Prediction of High-risk Areas for Vhicle Crashes'
+author: "Jeong Hoon Kim"
+date: "November 8th, 2019"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    code_folding: hide
+    toc: yes
+    toc_float:
+      collapsed: no
+      include: no
+      smooth_scroll: yes
+---
+
+```{r setup, message=FALSE, warning=FALSE, include=FALSE, echo=TRUE, cache=TRUE}
+# rm(list=ls())
+# install.packages("thePackage")
+# writeLines('PATH="${RTOOLS40_HOME}\\usr\\bin;${PATH}"', con = "~/.Renviron")
+# Sys.which("make")
+# install.packages("jsonlite", type = "source")
+# install.packages("knitr")
+# install.packages("packrat")
+# install.packages("rsconnect")
+
+library(ggmap)
+library(censusapi)
+library(stringr)
+library(corrplot)
+library(stargazer)
+library(tidyverse)
+library(tidycensus)
+library(ggplot2)
+library(ggthemes)
+library(sf)
+library(tigris)
+library(QuantPsyc)
+library(RSocrata)
+library(viridis)
+library(caret)
+library(spatstat)
+library(spdep)
+library(FNN)
+library(grid)
+library(gridExtra)
+library(knitr)
+library(kableExtra)
+library(raster)
+library(wesanderson)
+library(magrittr)
+library(dplyr)
+library(data.table)
+library(knitr)
+library(rnaturalearth)
+library(RColorBrewer)
+library(censusapi)
+library(leaflet)
+library(spatstat)
+
+Sys.setenv(CENSUS_KEY="2f15b4f9601213f2624380fbae7359cbd96f5464")
+readRenviron("~/.Renviron")
+Sys.getenv("2f15b4f9601213f2624380fbae7359cbd96f5464")
+census_api_key("2f15b4f9601213f2624380fbae7359cbd96f5464")
+
+mapTheme <- function(base_size = 12) {
+  theme(
+    text = element_text( color = "black"),
+    plot.title = element_text(size = 15,colour = "black"),
+    plot.subtitle=element_text(face="italic"),
+    plot.caption=element_text(hjust=0),
+    axis.ticks = element_blank(),
+    panel.background = element_blank(),axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(colour = "black", fill=NA, size=2)
+  )
+}
+
+myTheme <- theme(
+  plot.title =element_text(hjust = 0.5,size=12),
+  plot.subtitle = element_text(size=8),
+  plot.caption = element_text(size = 6),
+  axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+  axis.text.y = element_text(size = 10),
+  axis.title.y = element_text(size = 10),
+  panel.background=element_blank(),
+  plot.background=element_blank(),
+  panel.grid.major=element_line(colour="#D0D0D0",size=.75),
+  axis.ticks=element_blank())
+
+plotTheme <- function(base_size = 12) {
+  theme(
+    text = element_text( color = "black"),
+    plot.title = element_text(size = 14,colour = "black"),
+    plot.subtitle = element_text(face="italic"),
+    plot.caption = element_text(hjust=0),
+    axis.ticks = element_blank(),
+    panel.background = element_blank(),
+    panel.grid.major = element_line("grey80", size = 0.1),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(colour = "black", fill=NA, size=2),
+    strip.background = element_rect(fill = "grey80", color = "white"),
+    strip.text = element_text(size=12),
+    axis.title = element_text(size=12),
+    axis.text = element_text(size=10),
+    plot.background = element_blank(),
+    legend.background = element_blank(),
+    legend.title = element_text(colour = "black", face = "italic"),
+    legend.text = element_text(colour = "black", face = "italic"),
+    strip.text.x = element_text(size = 14)
+  )
+}
+
+palette1 <- c("#FA7800","#C48C04","#8FA108","#5AB60C","#25CB10")
+palette2 <- c("#25CB10", "#5AB60C", "#8FA108", "#C48C04", "#FA7800")
+pal <- wes_palette("Zissou1", 5, type = "continuous")
+
+getmode <- function(v) {
+  uniqv <- unique(v)
+  uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+```
+
+
+
+###1. DATA WRANGLING
+
+####1-0. IMPORTING BASIC BOUNDARIES
+
+```{r echo=TRUE, results=FALSE, message=FALSE, warning=FALSE}
+chicagoBoundary <- 
+  st_read("https://data.cityofchicago.org/api/geospatial/ewy2-6yfk?method=export&format=GeoJSON") %>%
+  st_as_sf(crs = 102271)
+
+policeDistricts <- 
+  st_read("https://data.cityofchicago.org/api/geospatial/fthy-xz3r?method=export&format=GeoJSON") %>%
+  st_as_sf(crs = 102271)
+
+policeBeats <- 
+  st_read("https://data.cityofchicago.org/api/geospatial/aerh-rz74?method=export&format=GeoJSON") %>%
+  st_as_sf(crs = 102271)
+
+```
+
+
+####1-1. TRAFFIC CRASHES IN CHICAGO
+
+Traffic accidents have the tendency to be dependent, a phenomenon known as spatial autocorrelation. As the below map, crashes in Chicago are clustered, which means that a location has a strong relation with a crash. Identifying high-crash-risk locations provides public safety specialists with an better insight to understand crash patterns and enhance road safety management. 
+
+
+**REQUIREMENT 1. Map of traffic crashes throughout Chicago as points**
+
+For the "Geospatial Risk Modeling" assignment, I downloaded the traffic crashes data after 2019 from the Chicago Open Data site. I am interested in safety issues of pedestrians, drivers and bikers, so I selected only the crash records having injuries. The total number of crashes having injuries after 2019 is actually 13,473, but the only 2,628 datasets is available for the analysis after omitting NA values as the below figure 1.1. 
+
+```{r echo=TRUE, fig.height=8, fig.width=6, fig.align="center", message=FALSE, warning=FALSE}
+crashes <- read.csv("C:/Users/user/Downloads/R_Projects/prj_1/Traffic_Crashes_-_Crashes.csv") %>% 
+  na.omit %>%
+  st_as_sf(coords = c("LONGITUDE", "LATITUDE"), crs = 4326, agr = "constant")%>%
+  distinct()
+
+ggplot() + 
+  geom_sf(data = chicagoBoundary, colour="#FFFFFF") +
+  geom_sf(data = crashes, colour="#05214D", size=0.2, show.legend = "point") +
+  labs(title = "Traffic Crashes, Chicago, 2019 (by Oct.)",
+       subtitle = "Total: 2,628",
+       caption = "Figure 1.1") +
+  mapTheme()
+
+```
+
+
+
+####1-2. JOINING CRASHES TO THE FISHNET
+
+```{r echo=TRUE, results=FALSE, message=FALSE, warning=FALSE}
+fishnet <- 
+  st_make_grid(chicagoBoundary, cellsize = .0049, square = FALSE) %>%
+  st_sf()
+
+fishnet <- 
+  fishnet[chicagoBoundary,] %>%
+  mutate(uniqueID = rownames(.)) %>%
+  dplyr::select(uniqueID)
+
+crash_net <- 
+  crashes %>% 
+  dplyr::select() %>% 
+  mutate(countCrashes = 1) %>% 
+  aggregate(., fishnet, sum) %>%
+  mutate(countCrashes = ifelse(is.na(countCrashes), 0, countCrashes),
+         uniqueID = rownames(.),
+         cvID = sample(round(nrow(fishnet) / 24), size=nrow(fishnet), replace = TRUE))
+
+```
+
+
+**REQUIREMENT 2. Map of traffic crashes joined to the fishnet**
+
+Using the "fishnet", I made a grid cell lattice on City of Chicago, and joined the above crash data to the lattice map for analyzing the count of crash on Chicago. The 500ft by 500ft grid cell was used for this analysis. The below figure 2.2 shows the map of traffic crashes joined to the fishnet.
+
+```{r echo=TRUE, fig.height=8, fig.width=6, fig.align="center", message=FALSE, warning=FALSE}
+ggplot() +
+  geom_sf(data = crash_net, aes(fill = countCrashes)) +
+  scale_fill_viridis(option="cividis") +
+  labs(title = "Count of Traffic Crashes for the fishnet",
+       subtitle = "A grid cell size: 500 ft",
+       caption = "Figure 1.2") +
+  mapTheme()
+
+```
+
+
+
+
+
+###2. FEATURE ENGINEERING: RISK FACTORS
+
+In order to create a simple prediction model of vehicel crashes, five risk factors are downloaded from the Chicago Open Data Portal. The datasets are as below;
+
+    RISK FACTORS: 1) RED LIGHT CAMERA VIOLATIONS, 2019
+                  2) SPEED CAMERA VIOLATIONS, 2019
+                  3) Divvy BICYCLE STATIONS, 2019
+                  4) POLICE STATION, 2019
+                  5) 311 CALLS FOR STREET LIGHTS OUT, 2018
+
+In this "feature enginerring" chapter, I calculate 1) the number of risk factors by a grid cell, 2) the closest distance to the nearest neighbor, and 3) the euclidean distance to the Chicago's CBD area. These figures would be used for the independent variables for the outcome, the number of vehicle crahses having injuries.
+
+```{r echo=TRUE, results=FALSE, message=FALSE, warning=FALSE}
+
+redViolation <- read.csv("C:/Users/user/Downloads/R_Projects/prj_1/Red_Light_Camera_Violations.csv") %>%
+  dplyr::select(Y = LATITUDE, X = LONGITUDE) %>%
+  na.omit %>%
+  st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant")%>%
+  st_transform(st_crs(fishnet)) %>% 
+  mutate(Legend = "Red_Violation")
+
+speedViolation <- read.csv("C:/Users/user/Downloads/R_Projects/prj_1/Speed_Camera_Violations.csv") %>%
+  dplyr::select(Y = LATITUDE, X = LONGITUDE) %>%
+  na.omit %>%
+  st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant")%>%
+  st_transform(st_crs(fishnet)) %>% 
+  mutate(Legend = "Speed_Violation")
+
+bikeStation <- read.csv("C:/Users/user/Downloads/R_Projects/prj_1/Divvy_Bicycle_Stations_-_In_Service.csv") %>%
+  dplyr::select(Y = Latitude, X = Longitude) %>%
+  na.omit %>%
+  st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant")%>%
+  st_transform(st_crs(fishnet)) %>% 
+  mutate(Legend = "Bike_Station")
+
+policeStation <- read.csv("C:/Users/user/Downloads/R_Projects/prj_1/Police_Stations.csv") %>%
+  dplyr::select(Y = LATITUDE, X = LONGITUDE) %>%
+  na.omit %>%
+  st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant")%>%
+  st_transform(st_crs(fishnet)) %>% 
+  mutate(Legend = "Bike_Station")
+
+streetLightsOut <- 
+  read.socrata("https://data.cityofchicago.org/Service-Requests/311-Service-Requests-Street-Lights-All-Out/zuxi-7xem") %>%
+    mutate(year = substr(creation_date,1,4)) %>%
+    filter(year == "2018") %>%
+    dplyr::select(Y = latitude, X = longitude) %>%
+  na.omit() %>%
+  st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant") %>%
+  st_transform(st_crs(fishnet)) %>%
+  mutate(Legend = "Street_Lights_Out")
+
+neighborhoods <- 
+  st_read("https://raw.githubusercontent.com/blackmad/neighborhoods/master/chicago.geojson") %>%
+  st_transform(st_crs(fishnet)) 
+
+```
+
+
+
+####2-1. COUNT OF RISK FACTORS BY FISHNET
+
+The first feature engineering is the sums the number of a risk factor points in a grid cell. The "vars_net1" contains the above the five independent variables joined to the fishnet with a wide form.
+
+```{r echo=TRUE, results=FALSE, message=FALSE, warning=FALSE}
+vars_net1 <- 
+  rbind(redViolation, speedViolation, bikeStation,
+        policeStation, streetLightsOut) %>%
+  st_join(., fishnet, join=st_within) %>%
+  st_set_geometry(NULL) %>%
+  group_by(uniqueID, Legend) %>%
+  summarize(count = n()) %>%
+  full_join(fishnet) %>%
+  spread(Legend, count, fill=0) %>%
+  st_sf() %>%
+  dplyr::select(-`<NA>`) %>%
+  na.omit()
+
+```
+
+
+
+####2-2. DISTANCE TO NEAREST NEIGHBOR OF RISK FACTORS BY FISHNET
+
+For better understanding local exposure to risk factors, average nearest neighbor distance was calculated. 
+
+```{r echo=TRUE, results=FALSE, message=FALSE, warning=FALSE}
+nn_function <- function(measureFrom,measureTo,k) {
+  measureFrom_Matrix <-
+    as.matrix(measureFrom)
+  measureTo_Matrix <-
+    as.matrix(measureTo)
+  nn <-   
+    get.knnx(measureTo, measureFrom, k)$nn.dist
+    output <-
+      as.data.frame(nn) %>%
+      rownames_to_column(var = "thisPoint") %>%
+      gather(points, point_distance, V1:ncol(.)) %>%
+      arrange(as.numeric(thisPoint)) %>%
+      group_by(thisPoint) %>%
+      summarize(pointDistance = mean(point_distance)) %>%
+      arrange(as.numeric(thisPoint)) %>% 
+      dplyr::select(-thisPoint) %>%
+      pull()
+  
+  return(output)  
+}
+
+vars_net1$Bike_Station.nn =
+    nn_function(st_coordinates(st_centroid(vars_net1)), st_coordinates(bikeStation), 3)
+
+vars_net1$Red_Violation.nn =
+    nn_function(st_coordinates(st_centroid(vars_net1)), st_coordinates(redViolation), 3)
+
+vars_net1$Speed_Violation.nn =
+    nn_function(st_coordinates(st_centroid(vars_net1)), st_coordinates(speedViolation), 3)
+
+vars_net1$Police_Station.nn =
+    nn_function(st_coordinates(st_centroid(vars_net1)), st_coordinates(policeStation), 3)
+
+vars_net1$Street_Lights_Out.nn =
+    nn_function(st_coordinates(st_centroid(vars_net1)), st_coordinates(streetLightsOut), 3)
+
+```
+
+
+
+####2-3. DISTANCE TO THE CENTROID FOR THE LOOP NEIGHBOR BY FISHNET
+
+The distance to the centroid of Chicago's CBD area was calculated for comparing it with the spatial structure in the later.
+
+```{r echo=TRUE, results=FALSE, message=FALSE, warning=FALSE}
+loopPoint <-
+  neighborhoods %>%
+  filter(name == "Loop") %>%
+  st_centroid()
+
+vars_net1$loopDistance =
+  st_distance(st_centroid(vars_net1),loopPoint) %>%
+  as.numeric() 
+
+```
+
+
+**REQUIREMENT 3. Maps of risk factors by fishnet**
+
+Based on the above calculations I could get the following the maps of 10 risk factors for the traffic crashes. The map of the number of the plice station is excluded in the below map chart because the total number of the risk facotr is only about 23 on Chicago area. 
+
+```{r echo=TRUE, fig.height=8, fig.width=15, fig.align="center", message=FALSE, warning=FALSE}
+vars_net.long <- 
+  vars_net1 %>%
+  gather(Variable, value, -geometry, -uniqueID)
+
+vars <- unique(vars_net.long$Variable)
+mapList <- list()
+
+for(i in vars){
+  mapList[[i]] <- 
+    ggplot() +
+      geom_sf(data = filter(vars_net.long, Variable == i), aes(fill=value), colour=NA) +
+      scale_fill_viridis(option="cividis") +
+      labs(title=i) +
+      mapTheme()}
+
+do.call(grid.arrange,c(mapList, ncol =5, top = "Risk Factors by Fishnet"))
+
+```
+
+
+
+####2-4. CREATE THE FINAL-NET
+
+For the final step on the feature engineering, the crash-fishnet layer and variable-fishnet layer are spatially joined to the "final_net1".
+
+```{r echo=TRUE, results=FALSE, message=FALSE, warning=FALSE}
+final_net1 <-
+  left_join(crash_net, st_set_geometry(vars_net1, NULL), by="uniqueID") 
+
+final_net1 <-
+  st_centroid(final_net1) %>%
+    st_join(., dplyr::select(neighborhoods, name)) %>%
+    st_join(., dplyr::select(policeDistricts, dist_num)) %>%
+      st_set_geometry(NULL) %>%
+      left_join(dplyr::select(final_net1, geometry, uniqueID)) %>%
+      st_sf() %>%
+  na.omit()
+
+```
+
+
+
+
+
+###3. EXPLORING SPATIAL STRUCTURE
+
+
+In this section, I visualize spatial autocorrelation on a local scale. The null hypothesis for Local Moran's I for the geospatial risk model is that traffic crash count at a given location is randomly distributed relative to its immediate neighbors.
+
+
+####3-1. EXPLORING THE SPATIAL STRUCTURE OF TRAFFIC CRASH
+
+```{r echo=TRUE, results=FALSE, message=FALSE, warning=FALSE}
+final_net1.nb <- poly2nb(final_net1, queen=TRUE)
+final_net1.weights <- nb2listw(final_net1.nb, style="W", zero.policy=TRUE)
+
+final_net1.localMorans <- 
+  cbind(
+    as.data.frame(localmoran(final_net1$countCrashes, final_net1.weights)),
+    as.data.frame(final_net1, NULL)) %>% 
+    st_sf() %>%
+    dplyr::select(Crash_Count = countCrashes, 
+                  Local_Morans_I = Ii, 
+                  P_Value = `Pr(z > 0)`) %>%
+    mutate(Significant_Hotspots = ifelse(P_Value <= 0.05, 1, 0)) %>%
+    gather(Variable, Value, -geometry)
+  
+vars <- unique(final_net1.localMorans$Variable)
+varList <- list()
+
+```
+
+
+**REQUIREMENT 4. Maps of traffic crashes related to Local Moran's**
+
+The below maps describe the spatial process of traffic crash in Chicago. The second map shows the Local Moran's I, and the last map shows the significant hotspot areas of traffic crashes having injuries based on the grid cells having p-value <=0.05.
+
+```{r echo=TRUE, fig.height=4, fig.width=12, fig.align="center", message=FALSE, warning=FALSE}
+for(i in vars){
+  varList[[i]] <- 
+    ggplot() +
+      geom_sf(data = filter(final_net1.localMorans, Variable == i), aes(fill = Value), colour=NA) +
+      scale_fill_viridis(option="cividis") +
+      labs(title=i) +
+      mapTheme()}
+
+do.call(grid.arrange,c(varList, ncol = 4, top = "Local Morans I statistics, Crash"))
+
+```
+
+
+####3-2. DISTANCE TO SIGNIFICANT LOCAL CRASH HOTSPOTS
+
+Next, Local Moran's I is calculated in the "final_net1". "crash.isSig.dist" means the distance from each grid cell to its nearest significant cluster. 
+
+```{r echo=TRUE, results=FALSE, message=FALSE, warning=FALSE}
+final_net1 <-
+  final_net1 %>% 
+  mutate(crash.isSig = ifelse(localmoran(final_net1$countCrashes, 
+                                            final_net1.weights)[,5] <= 0.0000001, 1, 0)) %>%
+  mutate(crash.isSig.dist = nn_function(st_coordinates(st_centroid(final_net1)),
+                                           st_coordinates(st_centroid(
+                                             filter(final_net1, crash.isSig == 1))), 1 ))
+
+```
+
+
+
+
+
+###4. CORRELATION
+
+####4-1. CORRELATION TESTS
+
+```{r echo=TRUE, results=FALSE, message=FALSE, warning=FALSE}
+correlation1.long <-
+  st_set_geometry(final_net1, NULL) %>%
+    dplyr::select(-uniqueID, -cvID, -loopDistance, -name, -dist_num) %>%
+    gather(Variable, Value, -countCrashes)
+
+correlation1.cor <-
+  correlation1.long %>%
+    group_by(Variable) %>%
+    summarize(correlation = cor(Value, countCrashes, use = "complete.obs"))
+
+```
+
+
+**REQUIREMENT 5. Scatterplots with Correlation **
+
+Withe the scatterplots with correlation, we can figure out which risk factor can be included in the model. Let's the compare the number of rask factors and the distance. The number of traffic crashes decrease as the distance of risk factors incrase. However, the number of traffic crashes increase as the number of risk factors increase. This means that the number and the distance are correlated, so we cannot include the both risk factors at the same model.
+
+```{r echo=TRUE, fig.height=13, fig.width=10, fig.align="center", message=FALSE, warning=FALSE}
+ggplot(correlation1.long, aes(Value, countCrashes)) +
+  geom_point(size = 0.1) +
+  geom_text(data = correlation1.cor, aes(label = paste("r =", round(correlation, 2))),
+            x=-Inf, y=Inf, vjust = 1, hjust = -.1) +
+  geom_smooth(method = "lm", se = FALSE, colour = "steelblue", size= 1.5) +
+  facet_wrap(~Variable, ncol = 2, scales = "free") +
+  labs(title = "Scatterplots of risk factors with correlation")
+
+```
+
+
+
+
+
+###5. REGRESSION
+
+####5.1 POISSON REGRESSION
+
+
+**REQUIREMENT 6. Histogram of traffic crash**
+
+The below histogram of traffic crash shows that the distribution is right skewed. This means that, vehicle crash incidence is a relatively rare event, like a crime. Because of the right-skewed distribution, I used Poisson Regression for building a prediction model for vehicle crashes. 
+
+```{r echo=TRUE, fig.height=5, fig.width=8, fig.align="center", warning=FALSE}
+ggplot(final_net1, aes(countCrashes)) + 
+  geom_histogram(binwidth = 1, fill="#05214D") +
+  labs(title = "Distribution of traffic crash by grid cell",
+       subtitle = "Total: 2,628")
+
+```
+
+
+
+####5.2 CROSS-VALIDATED POISSON REGRESSION
+
+```{r echo=TRUE, results=FALSE, message=FALSE, warning=FALSE}
+reg1.vars <- c("Bike_Station.nn", "Red_Violation.nn", "Speed_Violation.nn", 
+               "Police_Station.nn","Street_Lights_Out.nn","loopDistance")
+
+reg1.ss.vars <- c("Bike_Station.nn", "Red_Violation.nn", "Speed_Violation.nn", 
+                  "Police_Station.nn","Street_Lights_Out.nn","loopDistance",
+                  "crash.isSig", "crash.isSig.dist")
+
+crossValidate1 <- function(dataset, id, dependentVariable, indVariables) {
+
+allPredictions <- data.frame()
+cvID_list <- unique(dataset[[id]])
+
+for (i in cvID_list) {
+
+  thisFold <- i
+  cat("This hold out fold is", thisFold, "\n")
+
+  fold.train <- filter(dataset, dataset[[id]] != thisFold) %>% as.data.frame() %>% 
+                dplyr::select(id, geometry, indVariables, dependentVariable)
+  fold.test  <- filter(dataset, dataset[[id]] == thisFold) %>% as.data.frame() %>% 
+                dplyr::select(id, geometry, indVariables, dependentVariable)
+  
+  regression <-
+    glm(countCrashes ~ ., family = "poisson", 
+      data = fold.train %>% 
+      dplyr::select(-geometry, -id))
+  
+  thisPrediction <- 
+    mutate(fold.test, Prediction = predict(regression, fold.test, type = "response"))
+    
+  allPredictions <-
+    rbind(allPredictions, thisPrediction)
+    
+  }
+  return(st_sf(allPredictions))
+}
+
+```
+
+In this section, total 4 cross-validated regressions (for both random k-fold and LOGO cross validations for two different specifications) are generated. The first regression variables include the distance of risk factors and the distance to the center of Chicago's CBD. The second regressino variables include the distance and the spatial structure features created in the former section instead of the loop distance. 
+
+```{r echo=TRUE, results=FALSE, message=FALSE, warning=FALSE}
+reg1.cv <- crossValidate1(
+  dataset = final_net1,
+  id = "cvID",
+  dependentVariable = "countCrashes",
+  indVariables = reg1.vars) %>%
+    dplyr::select(cvID = cvID, countCrashes, Prediction, geometry)
+
+reg1.ss.cv <- crossValidate1(
+  dataset = final_net1,
+  id = "cvID",
+  dependentVariable = "countCrashes",
+  indVariables = reg1.ss.vars) %>%
+    dplyr::select(cvID = cvID, countCrashes, Prediction, geometry)
+
+reg1.spatialCV <- crossValidate1(
+  dataset = final_net1,
+  id = "name",
+  dependentVariable = "countCrashes",
+  indVariables = reg1.vars) %>%
+    dplyr::select(cvID = name, countCrashes, Prediction, geometry)
+
+reg1.ss.spatialCV <- crossValidate1(
+  dataset = final_net1,
+  id = "name",
+  dependentVariable = "countCrashes",
+  indVariables = reg1.ss.vars) %>%
+    dplyr::select(cvID = name, countCrashes, Prediction, geometry)
+
+```
+
+
+
+####5.3 ACCURACY & GENERALIZABILITY
+
+```{r echo=TRUE, results=FALSE, message=FALSE, warning=FALSE}
+reg1.summary <- 
+  rbind(
+    mutate(reg1.cv,           Error = countCrashes - Prediction,
+                             Regression = "Random k-fold CV: Just Risk Factors"),
+                             
+    mutate(reg1.ss.cv,        Error = countCrashes - Prediction,
+                             Regression = "Random k-fold CV: Spatial Structure"),
+    
+    mutate(reg1.spatialCV,    Error = countCrashes - Prediction,
+                             Regression = "Spatial LOGO-CV: Just Risk Factors"),
+                             
+    mutate(reg1.ss.spatialCV, Error = countCrashes - Prediction,
+                             Regression = "Spatial LOGO-CV: Spatial Structure")) %>%
+    st_sf() 
+
+```
+
+
+**REQUIREMENT 7. Maps of model errors**
+
+Mean errors of the four regression models are caclulated on predicted and observed traffic crash counts. Below four maps show the prediction errors of the four gression models. By comparing the models with spatial structure to without it, we can find that many of the hotspots in the model without the local spatial structure go under-predicted.
+
+```{r echo=TRUE, fig.height=10, fig.width=7, fig.align="center", message=FALSE, warning=FALSE}
+filter(reg1.summary, 
+       Regression == "Random k-fold CV: Just Risk Factors" |
+       Regression == "Random k-fold CV: Spatial Structure" |
+       Regression == "Spatial LOGO-CV: Just Risk Factors" | 
+       Regression == "Spatial LOGO-CV: Spatial Structure") %>%
+  ggplot() +
+    geom_sf(aes(fill = Error)) +
+    facet_wrap(~Regression) +
+    scale_fill_viridis(option="cividis") +
+    labs(title = "Crash errors by Regression",
+         subtitle = "Raw errors, not absolute errors") +
+    mapTheme()
+
+```
+
+
+**REQUIREMENT 8. A table of MAE and standard deviation MAE by regression**
+
+The below chart shows the MAE and standard deviation of MAE across each fold for each regression type. The chart shows that MAE values of regressions with the spatial structural features are less than regressions without them. This implies that spatial structure factors features make the prediction more accurate, which means that the spatial structural features do have a significant role in prediction of vehicle crushes in both models. Based on the chart, my models err by roughly 0.8 absolute value of traffic crash on average.
+
+```{r echo=TRUE, fig.height=4, fig.width=7, fig.align="center", message=FALSE, warning=FALSE}
+st_set_geometry(reg1.summary, NULL) %>%
+  group_by(Regression) %>% 
+  summarize(MAE = round(mean(abs(Prediction - countCrashes), na.rm = T),2),
+            SD_MAE = round(sd(abs(Prediction - countCrashes), na.rm = T),2)) %>% 
+  kable(caption = "MAE by regression") %>%
+    kable_styling("striped", full_width = F) %>%
+    row_spec(2, color = "white", background = "#05214D") %>%
+    row_spec(4, color = "white", background = "#05214D") 
+
+```
+
+
+
+####5.4 GENERALIZABILITY BY NEIGHBORHOOD CONTEXT
+
+```{r echo=TRUE, results=FALSE, message=FALSE, warning=FALSE}
+tracts17 <- 
+  get_acs(geography = "tract", variables = c("B01001_001E","B01001A_001E"), 
+          year = 2017, state=17, county=031, geometry=T) %>%
+  dplyr::select(variable, estimate, GEOID) %>%
+  spread(variable, estimate) %>%
+  rename(TotalPop = B01001_001,
+         NumberWhites = B01001A_001) %>%
+  mutate(percentWhite = NumberWhites / TotalPop,
+         raceContext = ifelse(percentWhite > .5, "Majority_White", "Majority_Non_White")) %>%
+  st_transform(4326) %>%
+  .[neighborhoods,]
+
+```
+
+
+**REQUIREMENT 9. A table of raw errors by race context for a random k-fold vs. spatial cross validation regression**
+
+The below chart includes the raw errors for the above four regressions by race context and spatial structure features. As the previous chart, the models with the spatial structural features have lower errors. And models show comparatively lower differences in errors in neighborhood racial context. The most significant thing that takes away from this chart is that mean errors in all regressions are positive in non-white neighborhoods, but they are negative in white neighborhoods. This implies that all prediction models under-estimates the vehicle risks in white neighborhoods, while they over-estimates the risks in non-white neighborhoods. 
+
+```{r echo=TRUE, fig.height=4, fig.width=7, fig.align="center", message=FALSE, warning=FALSE}
+final_reg1 <- 
+  filter(reg1.summary, Regression == "Random k-fold CV: Just Risk Factors" |
+                       Regression == "Random k-fold CV: Spatial Structure" |
+                       Regression == "Spatial LOGO-CV: Just Risk Factors" |
+                       Regression == "Spatial LOGO-CV: Spatial Structure") %>%
+  mutate(uniqueID = rownames(.))
+
+final_reg1.tracts <- 
+  st_join(st_centroid(final_reg1), tracts17) %>%
+    st_set_geometry(NULL) %>%
+    left_join(dplyr::select(final_reg1, uniqueID)) %>%
+    st_sf() %>%
+    na.omit()
+
+st_set_geometry(final_reg1.tracts, NULL) %>%
+  group_by(Regression, raceContext) %>%
+  summarize(mean.Error = mean(Error, na.rm = T)) %>%
+  spread(raceContext, mean.Error) %>%
+  kable(caption = "Mean Error by neighborhood racial context") %>%
+    kable_styling("striped", full_width = F) %>%
+    row_spec(2, color = "white", background = "#05214D") %>%
+    row_spec(4, color = "white", background = "#05214D")
+
+```
+
+
+
+
+
+###6. VALIDATION
+
+####6.1 COMPARISON OF KERNEL DENSITY AND RISK PREDICTIONS
+
+```{r echo=TRUE, results=FALSE, message=FALSE, warning=FALSE}
+crsh_ppp <- as.ppp(st_coordinates(crashes), W = st_bbox(final_net1))
+crsh_KD <- spatstat::density.ppp(crsh_ppp, 0.005)
+
+crsh_KDE_sf <- as.data.frame(crsh_KD) %>%
+  st_as_sf(coords = c("x", "y"), crs = st_crs(final_net1)) %>%
+  aggregate(., final_net1, mean) %>%
+  mutate(label = "Kernel Density",
+         Risk_Category = ntile(value, 100),
+         Risk_Category = case_when(
+           Risk_Category >= 90 ~ "90% to 100%",
+           Risk_Category >= 70 & Risk_Category <= 89 ~ "70% to 89%",
+           Risk_Category >= 50 & Risk_Category <= 69 ~ "50% to 69%",
+           Risk_Category >= 30 & Risk_Category <= 49 ~ "30% to 49%",
+           Risk_Category >= 1 & Risk_Category <= 29 ~ "1% to 29%")) %>%
+  bind_cols(
+    aggregate(
+      dplyr::select(crashes) %>% mutate(crshCount = 1), ., length) %>%
+    mutate(crshCount = replace_na(crshCount, 0))) %>%
+  dplyr::select(label, Risk_Category, crshCount, geometry...6)
+names(crsh_KDE_sf)[names(crsh_KDE_sf) == "geometry...6"] <- "geom"
+
+crsh_risk_sf <-
+  filter(final_reg1, Regression == "Spatial LOGO-CV: Spatial Structure") %>%
+  mutate(label = "Risk Predictions",
+         Risk_Category = ntile(Prediction, 100),
+         Risk_Category = case_when(
+           Risk_Category >= 90 ~ "90% to 100%",
+           Risk_Category >= 70 & Risk_Category <= 89 ~ "70% to 89%",
+           Risk_Category >= 50 & Risk_Category <= 69 ~ "50% to 69%",
+           Risk_Category >= 30 & Risk_Category <= 49 ~ "30% to 49%",
+           Risk_Category >= 1 & Risk_Category <= 29 ~ "1% to 29%")) %>%
+  bind_cols(
+    aggregate(
+      dplyr::select(crashes) %>% mutate(crshCount = 1), ., length) %>%
+      mutate(crshCount = replace_na(crshCount, 0))) %>%
+  dplyr::select(label,Risk_Category, crshCount, geometry...6)
+names(crsh_risk_sf)[names(crsh_risk_sf) == "geometry...6"] <- "geom"
+
+```
+
+
+**REQUIREMENT 10. Map comparing kernel density to risk predictions**
+
+The below two maps with traffic crash points compare the kernel density map of observed vehicle crashes to the risk prediction from the LOGO-CV with the spatial structure features. The right risk prediction map shows more scattered patterns in vehicle crashes across Chicago than the kernel density map.
+
+
+```{r echo=TRUE, fig.height=6, fig.width=10, fig.align="center", message=FALSE, warning=FALSE}
+rbind(crsh_KDE_sf, crsh_risk_sf) %>%
+  ggplot() +
+    geom_sf(aes(geometry = geom, fill = Risk_Category), colour = NA) +
+    geom_sf(data = sample_n(crashes, 1500), size = .1, colour = "steelblue") +
+    facet_wrap(~label, ) +
+    scale_fill_viridis(option="cividis", discrete = TRUE) +
+    labs(title="Comparison of Kernel Density and Risk Predictions",
+         subtitle="Relative to test set points (in blue)") +
+    mapTheme()
+
+```
+
+
+**REQUIREMENT 11. Barplot comparing kernel density to risk predictions**
+
+In the last, the below plots show the rate of crash points by risk category and by model type. Under 70% risk cateogires, my risk prediction model capture a greater share of observed traffic crashes relative to the kernel density map. However, in the highest risk category, the kernel density map shows the higher rate of observed traffic crashes than my risk prediction model. This means that my model overfits the categories under 70% risk and underfits the higest risk category. 
+
+```{r echo=TRUE, fig.height=6, fig.width=10, fig.align="center", message=FALSE, warning=FALSE}
+rbind(crsh_KDE_sf, crsh_risk_sf) %>%
+  group_by(label, Risk_Category) %>%
+  summarize(countCrashes = sum(crshCount)) %>%
+  ungroup() %>%
+  group_by(label) %>%
+  mutate(Rate_of_test_set_crashes = countCrashes / sum(countCrashes)) %>%
+    ggplot(aes(Risk_Category,Rate_of_test_set_crashes)) +
+      geom_bar(aes(fill=label), position="dodge", stat="identity") +
+      scale_fill_manual("label", values = c("Kernel Density" = "#05214D", "Risk Predictions" = "#E0D85D"))
+
+```
+
+
+
+
+
+###7. CONCLUSION
+
+**REQUIREMENT 12. Two paragraphs on why or why not you would recommend your algorithm be put into production**
+
+For planners as well as citizen living in a city, we all care about areas with the highest risk. In this assignment, the best scenario that I hope to conclude is that my risk prediction model shows a overfitted model, especially in the highest risk category. However, as you can see the above chart, my risk prediction model shows a lower rate in the higest risk categories. However, my algorithm shows higher test rates under 70% risk cateogires than the current decision making process in planning (kernel density). These two patterns shows that my prediction model is underfitted. For the next step, I would find the way of developing this model to overfit in the higest category areas.
