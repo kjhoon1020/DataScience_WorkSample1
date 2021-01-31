@@ -1,6 +1,6 @@
 ---
 title: 'WORK SAMPLE FOR DATA SCIENCE 1'
-subtitle: 'Prediction of High-risk Areas for Vhicle Crashes in Chicago'
+subtitle: 'Prediction of High-risk Areas for Vehicle Crashes in Chicago'
 author: "Jeong Hoon Kim"
 date: "November 8th, 2019"
 output:
